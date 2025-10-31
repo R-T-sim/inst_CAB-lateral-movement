@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Hoist + Rigid Chains (Double Pendulum w/ Moving Pivot) → Excel Export</title>
-<meta name="description" content="Hoist moving left/right, two rigid chains (0.1kg each), work mass variable. Exports angles and work vx to Excel.">
+<title>Hoist + Rigid Chains (Angles, Moving Pivot) → Excel</title>
+<meta name="description" content="Double-pendulum with horizontally moving hoist. Rigid links, masses at joints. Exports angles and work vx to Excel.">
 <style>
 :root{--bg:#0b1020;--fg:#e8eef9;--muted:#9fb3d9;--card:#121a33;--good:#26d07c;--arm:#ff5a5a;--cab:#7fb6ff}
 html,body{height:100%}
@@ -31,11 +31,12 @@ hr{border:none;height:1px;background:#1b2445;margin:8px 0}
 <body>
 <div class="wrap">
   <div class="card panel">
-    <h1>ホイスト + 剛体チェーン①② + ワーク（Excel出力）</h1>
+    <h1>ホイスト + 剛体チェーン①② + ワーク（角度式 / Excel 出力）</h1>
     <div class="legend">
-      単位=メートル（内部）、重力=9.81 m/s²。チェーンは剛体長・質量各0.1 kg、ヒンジは角度拘束なし。<br>
-      操作：<span class="kbd">←</span>/<span class="kbd">→</span>=±1.0 m/s²、<span class="kbd">Space</span>=ブレーキ、<span class="kbd">P</span>=一時停止、<span class="kbd">R</span>=リセット
+      角度を状態量とするラグランジュ法。台車の水平加速 a₀ が直接 θ₁,θ₂ を励起します。<br>
+      操作：<span class="kbd">←</span>/<span class="kbd">→</span>=±1.0 m/s²、<span class="kbd">Space</span>=ブレーキ、<span class="kbd">P</span>=一時停止、<span class="kbd">R</span>=リセット（内部単位 m/s）
     </div>
+
     <h2>パラメータ</h2>
     <div class="row"><label>L1 [m]（チェーン①長）</label><input id="L1" type="number" step="0.01" value="1.50"></div>
     <div class="row"><label>L2 [m]（チェーン②長）</label><input id="L2" type="number" step="0.01" value="1.80"></div>
@@ -63,169 +64,193 @@ hr{border:none;height:1px;background:#1b2445;margin:8px 0}
 </div>
 
 <script>
-const g = 9.81, DEG = 180/Math.PI;
-
-// ---------- Canvas ----------
-const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
-const DPR = Math.max(1, window.devicePixelRatio||1);
-function resize(){ const r=cv.getBoundingClientRect(); const w=Math.floor(r.width*DPR), h=Math.floor(r.height*DPR); if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h;} }
-function ppm(){ const W=cv.width,H=cv.height; return Math.max(Math.min(W/10, H/7), 80); }
-window.addEventListener('resize', resize); resize();
-function add(a,b){return {x:a.x+b.x,y:a.y+b.y}}; function sub(a,b){return {x:a.x-b.x,y:a.y-b.y}};
-function mul(v,k){return {x:v.x*k,y:v.y*k}}; function dot(a,b){return a.x*b.x+a.y*b.y};
-function len(v){return Math.hypot(v.x,v.y)}; function norm(v){const L=len(v)||1;return {x:v.x/L,y:v.y/L}};
+/* ---------- 基本 ---------- */
+const g=9.81, DEG=180/Math.PI;
+const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+const DPR=Math.max(1,window.devicePixelRatio||1);
+function resize(){const r=cv.getBoundingClientRect();const w=Math.floor(r.width*DPR),h=Math.floor(r.height*DPR);if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h;}}
+function ppm(){const W=cv.width,H=cv.height;return Math.max(Math.min(W/10,H/7),80);}
+window.addEventListener('resize',resize);resize();
 function clamp(v,lo,hi){return v<lo?lo:(v>hi?hi:v);}
-const statusEl = document.getElementById('status'); const readout=document.getElementById('readout');
 
-// ---------- UI refs ----------
-const ref = {
-  L1: document.getElementById('L1'),
-  L2: document.getElementById('L2'),
-  mwork: document.getElementById('mwork'),
-  dt: document.getElementById('dt'),
-  T: document.getElementById('T'),
-  amax: document.getElementById('amax'),
-  vmax: document.getElementById('vmax'),
-};
-function params(){ return {L1:+ref.L1.value, L2:+ref.L2.value, m1:0.1, m2:0.1+(+ref.mwork.value), dt:+ref.dt.value, T:+ref.T.value, amax:+ref.amax.value, vmax:+ref.vmax.value}; }
-let P = params();
+/* ---------- UI ---------- */
+const ref={L1:el('L1'),L2:el('L2'),mwork:el('mwork'),dt:el('dt'),T:el('T'),amax:el('amax'),vmax:el('vmax')};
+function el(id){return document.getElementById(id);}
+function params(){return{L1:+ref.L1.value,L2:+ref.L2.value,m1:0.1,m2:0.1+(+ref.mwork.value),dt:+ref.dt.value,T:+ref.T.value,amax:+ref.amax.value,vmax:+ref.vmax.value};}
+let P=params();
+const statusEl=document.getElementById('status'), readout=document.getElementById('readout');
 
-// ---------- state ----------
-let state = {
-  t:0, x0:0, v0:0, a0:0,
-  r1:{x:0,y:0}, v1:{x:0,y:0},
-  r2:{x:0,y:0}, v2:{x:0,y:0},
-  theta1:0, theta2:0,
+/* ---------- 状態（角度ベース） ---------- */
+let state={
+  t:0,
+  // 台車
+  x0:0, v0:0, a0:0,
+  // 角度（鉛直下向き=0, 右向き正）
+  th1:0, th2:0,
+  w1:0, w2:0,  // 角速度
+  // 観測用（描画・ログ）
+  r1:{x:0,y:0}, r2:{x:0,y:0}, v2x:0
 };
 
-// ---------- キー状態（※ reset より前に宣言！） ----------
+// キー（先に宣言）
 let keyL=false, keyR=false, keyBrake=false, paused=false;
 
-// ---------- data buffers ----------
+/* ---------- Excel バッファ ---------- */
 let dataTime=[], dataTh1=[], dataTh2=[], dataVx=[];
 
-// ---------- draw ----------
-function draw(){
-  const W=cv.width,H=cv.height,s=ppm(), ox=W*0.5, oy=H*0.2, sx=x=>ox+x*s, sy=y=>oy-y*s;
+/* ---------- 初期化 ---------- */
+function reset(){
+  P=params();
+  state.t=0; state.x0=0; state.v0=0; state.a0=0;
+  state.th1=0; state.th2=0; state.w1=0; state.w2=0;
+  dataTime=[]; dataTh1=[]; dataTh2=[]; dataVx=[];
+  paused=false;
+  statusEl.textContent='Reset done.';
+  updateKinematicsAndDraw();
+}
+reset();
+
+/* ---------- 台車キー操作 ---------- */
+addEventListener('keydown',e=>{
+  if(e.code==='ArrowLeft') keyL=true;
+  if(e.code==='ArrowRight') keyR=true;
+  if(e.code==='Space') keyBrake=true;
+  if(e.key==='p'||e.key==='P'){paused=!paused; statusEl.textContent=paused?'Paused':'Running';}
+  if(e.key==='r'||e.key==='R') reset();
+});
+addEventListener('keyup',e=>{
+  if(e.code==='ArrowLeft') keyL=false;
+  if(e.code==='ArrowRight') keyR=false;
+  if(e.code==='Space') keyBrake=false;
+});
+
+/* ---------- 2リンク振子（移動支持点）EOM ----------
+   M(θ) * θ¨ + C(θ,θ̇) + G(θ) + A(θ)*a0 = 0
+   M11=(m1+m2)L1^2, M22=m2 L2^2, M12=M21=m2 L1 L2 cos(Δ)
+   C1=+m2 L1 L2 sin(Δ) w2^2,  C2= -m2 L1 L2 sin(Δ) w1^2
+   G1=(m1+m2) g L1 sinθ1,     G2= m2 g L2 sinθ2
+   A1=(m1+m2) L1 cosθ1,       A2= m2 L2 cosθ2
+------------------------------------------------------- */
+function stepOnce(){
+  const dt=P.dt;
+
+  // 台車の加速度入力
+  let ax=0; if(keyL)ax-=P.amax; if(keyR)ax+=P.amax;
+  if(keyBrake){ ax=clamp(-state.v0/dt, -P.amax, P.amax); }
+  state.a0=ax;
+  state.v0=clamp(state.v0+ax*dt, -P.vmax, P.vmax);
+  state.x0+=state.v0*dt;
+
+  // 角度の運動方程式
+  const th1=state.th1, th2=state.th2, w1=state.w1, w2=state.w2;
+  const m1=P.m1, m2=P.m2, L1=P.L1, L2=P.L2, a0=state.a0;
+  const d = th1 - th2;
+  const c = Math.cos(d), s = Math.sin(d);
+
+  // Mass matrix
+  const M11=(m1+m2)*L1*L1;
+  const M12=m2*L1*L2*c;
+  const M21=M12;
+  const M22=m2*L2*L2;
+
+  // Nonlinear terms
+  const C1= +m2*L1*L2*s*(w2*w2);
+  const C2= -m2*L1*L2*s*(w1*w1);
+  const G1=(m1+m2)*g*L1*Math.sin(th1);
+  const G2= m2*g*L2*Math.sin(th2);
+  const A1=(m1+m2)*L1*Math.cos(th1)*a0;
+  const A2= m2*L2*Math.cos(th2)*a0;
+
+  const rhs1=-(C1+G1+A1);
+  const rhs2=-(C2+G2+A2);
+
+  const det=M11*M22 - M12*M21;
+  let a1=0,a2=0;
+  if(Math.abs(det)>1e-12){
+    a1=(rhs1*M22 - M12*rhs2)/det;
+    a2=(M11*rhs2 - M21*rhs1)/det;
+  }
+
+  // 半陰的オイラー
+  state.w1 += a1*dt;
+  state.w2 += a2*dt;
+  state.th1 += state.w1*dt;
+  state.th2 += state.w2*dt;
+
+  // ログ＆描画
+  dataTime.push(state.t);
+  dataTh1.push(state.th1*DEG);
+  dataTh2.push(state.th2*DEG);
+  // work vx は運動学から
+  const v2x = state.v0 + L1*Math.cos(state.th1)*state.w1 + L2*Math.cos(state.th2)*state.w2;
+  dataVx.push(v2x);
+  state.t += dt;
+
+  updateKinematicsAndDraw();
+}
+
+/* ---------- 座標更新・描画 ---------- */
+function updateKinematicsAndDraw(){
+  const s=ppm(), W=cv.width, H=cv.height, ox=W*0.5, oy=H*0.2, sx=x=>ox+x*s, sy=y=>oy-y*s;
+
+  // 位置（yは上向きを正）
+  const L1=P.L1, L2=P.L2, th1=state.th1, th2=state.th2;
+  const r0x=state.x0, r0y=0;
+  const r1x=r0x + L1*Math.sin(th1);
+  const r1y=r0y - L1*Math.cos(th1);
+  const r2x=r1x + L2*Math.sin(th2);
+  const r2y=r1y - L2*Math.cos(th2);
+
+  state.r1={x:r1x,y:r1y};
+  state.r2={x:r2x,y:r2y};
+  state.v2x = state.v0 + L1*Math.cos(th1)*state.w1 + L2*Math.cos(th2)*state.w2;
+
+  // 描画
   ctx.clearRect(0,0,W,H);
+  // grid
   ctx.save(); ctx.lineWidth=1; ctx.strokeStyle='#132048';
   for(let x=-20;x<=20;x+=0.5){ctx.beginPath();ctx.moveTo(sx(x),0);ctx.lineTo(sx(x),H);ctx.stroke();}
   for(let y=-8;y<=8;y+=0.5){ctx.beginPath();ctx.moveTo(0,sy(y));ctx.lineTo(W,sy(y));ctx.stroke();}
   ctx.restore();
+
+  // hoist box
   ctx.fillStyle='#26d07c'; ctx.fillRect(sx(state.x0)-0.25*s, sy(0.2), 0.5*s, 0.2*s);
-  ctx.strokeStyle='#7bd6a8'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(sx(state.x0),sy(0)); ctx.lineTo(sx(state.r1.x),sy(state.r1.y)); ctx.stroke();
-  ctx.strokeStyle='#ff9a9a'; ctx.beginPath(); ctx.moveTo(sx(state.r1.x),sy(state.r1.y)); ctx.lineTo(sx(state.r2.x),sy(state.r2.y)); ctx.stroke();
-  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(sx(state.x0),sy(0),3,0,Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc(sx(state.r1.x),sy(state.r1.y),3,0,Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc(sx(state.r2.x),sy(state.r2.y),3,0,Math.PI*2); ctx.fill();
-  ctx.fillStyle='rgba(127,182,255,0.9)'; ctx.fillRect(sx(state.r2.x)-0.45*s, sy(state.r2.y)+0.3*s, 0.9*s, 0.6*s);
+  // chains
+  ctx.strokeStyle='#7bd6a8'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(sx(r0x),sy(r0y)); ctx.lineTo(sx(r1x),sy(r1y)); ctx.stroke();
+  ctx.strokeStyle='#ff9a9a'; ctx.beginPath(); ctx.moveTo(sx(r1x),sy(r1y)); ctx.lineTo(sx(r2x),sy(r2y)); ctx.stroke();
+  // joints
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(sx(r0x),sy(r0y),3,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(sx(r1x),sy(r1y),3,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(sx(r2x),sy(r2y),3,0,Math.PI*2); ctx.fill();
+  // work box（0.9×0.6m）
+  ctx.fillStyle='rgba(127,182,255,0.9)'; ctx.fillRect(sx(r2x)-0.45*s, sy(r2y)+0.3*s, 0.9*s, 0.6*s);
+
   readout.textContent =
-    `t=${state.t.toFixed(3)} s  x0=${state.x0.toFixed(3)} m  v0=${state.v0.toFixed(3)} m/s\n`+
-    `θ1=${(state.theta1*DEG).toFixed(2)} deg  θ2=${(state.theta2*DEG).toFixed(2)} deg   vx(work)=${state.v2.x.toFixed(3)} m/s`;
+   `t=${state.t.toFixed(3)} s  x0=${state.x0.toFixed(3)} m  v0=${state.v0.toFixed(3)} m/s\n`+
+   `θ1=${(state.th1*DEG).toFixed(2)} deg  θ2=${(state.th2*DEG).toFixed(2)} deg   vx(work)=${state.v2x.toFixed(3)} m/s`;
 }
 
-// ---------- reset ----------
-function reset(){
-  P = params();
-  state.t=0; state.x0=0; state.v0=0; state.a0=0;
-  state.r1={x:state.x0,y:-P.L1};
-  state.r2={x:state.x0,y:-P.L1-P.L2};
-  state.v1={x:0,y:0}; state.v2={x:0,y:0};
-  dataTime=[]; dataTh1=[]; dataTh2=[]; dataVx=[];
-  paused=false; // ← 先に宣言済みなのでOK
-  statusEl.textContent='Reset done.'; draw();
-}
-reset();
-
-// ---------- constraint projection ----------
-function enforceConstraints(){
-  const r0={x:state.x0,y:0};
-  let u1=sub(state.r1,r0), n1=norm(u1); state.r1=add(r0, mul(n1,P.L1));
-  let u2=sub(state.r2,state.r1), n2=norm(u2); state.r2=add(state.r1, mul(n2,P.L2));
-  const v0v={x:state.v0,y:0};
-  const w1 = ( (state.v1.x - v0v.x)*n1.x + (state.v1.y - v0v.y)*n1.y );
-  state.v1 = sub(state.v1, mul(n1, w1));
-  const w2 = ( (state.v2.x - state.v1.x)*n2.x + (state.v2.y - state.v1.y)*n2.y );
-  const alpha = (P.m2/(P.m1+P.m2))*w2, beta=(P.m1/(P.m1+P.m2))*w2;
-  state.v1 = add(state.v1, mul(n2, alpha));
-  state.v2 = sub(state.v2, mul(n2, beta));
-}
-
-// ---------- 1 step ----------
-function stepOnce(){
-  const dt=P.dt;
-  // hoist
-  let ax=0; if(keyL)ax-=P.amax; if(keyR)ax+=P.amax;
-  if(keyBrake){ ax=clamp(-state.v0/dt, -P.amax, P.amax); }
-  state.a0=ax; state.v0=clamp(state.v0+ax*dt, -P.vmax, P.vmax); state.x0+=state.v0*dt;
-
-  // tensions via constraint accelerations
-  const r0={x:state.x0,y:0};
-  const n1=norm(sub(state.r1,r0)); const n2=norm(sub(state.r2,state.r1));
-  const cosphi=clamp(n1.x*n2.x+n1.y*n2.y,-1,1);
-  const v0v={x:state.v0,y:0};
-  const v1rel={x:state.v1.x-v0v.x, y:state.v1.y-v0v.y};
-  const v2rel={x:state.v2.x-state.v1.x, y:state.v2.y-state.v1.y};
-  const S1=(v1rel.x*v1rel.x+v1rel.y*v1rel.y)/P.L1;
-  const S2=(v2rel.x*v2rel.x+v2rel.y*v2rel.y)/P.L2;
-
-  const RHS1 = S1 + (n1.y*-g) - (n1.x*state.a0);
-  const a11=1/P.m1, a12=-cosphi/P.m1, a21=cosphi/P.m1, a22=-(1/P.m2+1/P.m1);
-  const det=a11*a22 - a12*a21;
-  let T1=0,T2=0; if(Math.abs(det)>1e-12){ T1=(RHS1*a22 - a12*(-S2))/det; T2=(a11*(-S2)-a21*RHS1)/det; }
-
-  const a1={x: -T1*n1.x/P.m1 + T2*n2.x/P.m1, y: -g -T1*n1.y/P.m1 + T2*n2.y/P.m1};
-  const a2={x:          -T2*n2.x/P.m2,       y: -g -T2*n2.y/P.m2};
-
-  state.v1=add(state.v1, mul(a1,dt)); state.v2=add(state.v2, mul(a2,dt));
-  state.r1=add(state.r1, mul(state.v1,dt)); state.r2=add(state.r2, mul(state.v2,dt));
-  enforceConstraints();
-
-  const u1=sub(state.r1,r0), u2=sub(state.r2,state.r1);
-  state.theta1 = Math.atan2(u1.x, -u1.y);
-  state.theta2 = Math.atan2(u2.x, -u2.y);
-
-  dataTime.push(state.t); dataTh1.push(state.theta1*DEG); dataTh2.push(state.theta2*DEG); dataVx.push(state.v2.x);
-  state.t += dt;
-}
-
-// ---------- loop ----------
+/* ---------- ループ ---------- */
 let last=performance.now(), acc=0;
 function loop(now){
   const el=(now-last)/1000; last=now;
   if(!paused){ acc+=Math.min(el,0.2); while(acc>=P.dt && state.t<=P.T){ stepOnce(); acc-=P.dt; } }
-  draw(); requestAnimationFrame(loop);
+  requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
 
-// ---------- keys ----------
-addEventListener('keydown',e=>{
-  if(e.code==='ArrowLeft')keyL=true;
-  if(e.code==='ArrowRight')keyR=true;
-  if(e.code==='Space')keyBrake=true;
-  if(e.key==='p'||e.key==='P'){paused=!paused; statusEl.textContent=paused?'Paused':'Running';}
-  if(e.key==='r'||e.key==='R')reset();
-});
-addEventListener('keyup',e=>{
-  if(e.code==='ArrowLeft')keyL=false;
-  if(e.code==='ArrowRight')keyR=false;
-  if(e.code==='Space')keyBrake=false;
-});
-
-// ---------- Excel ----------
+/* ---------- Excel 出力 ---------- */
 function downloadExcel(){
   if(dataTime.length===0){ statusEl.textContent='データがありません。開始して少し動かしてください。'; return; }
-  const wb = XLSX.utils.book_new();
-  const rows1=[['time [s]','theta1 [deg]','theta2 [deg]']];
-  for(let i=0;i<dataTime.length;i++) rows1.push([+dataTime[i].toFixed(6), +dataTh1[i].toFixed(6), +dataTh2[i].toFixed(6)]);
-  const ws1=XLSX.utils.aoa_to_sheet(rows1); XLSX.utils.book_append_sheet(wb, ws1, 'Angles');
-  const rows2=[['time [s]','work vx [m/s]']];
-  for(let i=0;i<dataTime.length;i++) rows2.push([+dataTime[i].toFixed(6), +dataVx[i].toFixed(6)]);
-  const ws2=XLSX.utils.aoa_to_sheet(rows2); XLSX.utils.book_append_sheet(wb, ws2, 'Work_Vx');
-  XLSX.writeFile(wb,'hoist_twochains_sim.xlsx'); statusEl.textContent='Excel を出力しました。';
+  const wb=XLSX.utils.book_new();
+  const rows1=[['time [s]','theta1 [deg]','theta2 [deg]']]; for(let i=0;i<dataTime.length;i++) rows1.push([+dataTime[i].toFixed(6), +dataTh1[i].toFixed(6), +dataTh2[i].toFixed(6)]);
+  const ws1=XLSX.utils.aoa_to_sheet(rows1); XLSX.utils.book_append_sheet(wb,ws1,'Angles');
+  const rows2=[['time [s]','work vx [m/s]']]; for(let i=0;i<dataTime.length;i++) rows2.push([+dataTime[i].toFixed(6), +dataVx[i].toFixed(6)]);
+  const ws2=XLSX.utils.aoa_to_sheet(rows2); XLSX.utils.book_append_sheet(wb,ws2,'Work_Vx');
+  XLSX.writeFile(wb,'hoist_twochains_angles.xlsx'); statusEl.textContent='Excel を出力しました。';
 }
 
-// ---------- buttons ----------
+/* ---------- ボタン ---------- */
 document.getElementById('start').onclick=()=>{paused=false; statusEl.textContent='Running';};
 document.getElementById('pause').onclick=()=>{paused=true; statusEl.textContent='Paused';};
 document.getElementById('reset').onclick=reset;
