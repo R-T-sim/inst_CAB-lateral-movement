@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Hoist + Two Rigid Chains + Work (RATTLE with Right‑Angle Constraint) → Excel</title>
+<title>Hoist + Two Rigid Chains + Work (Right‑Angle & Fixed Hinge) → Excel</title>
 <style>
 :root{--bg:#0b1020;--fg:#e8eef9;--muted:#9fb3d9;--card:#121a33;--good:#26d07c;--arm:#ff5a5a;--cab:#7fb6ff}
 html,body{height:100%} body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif}
@@ -25,9 +25,9 @@ canvas{width:100%;height:100%;display:block} hr{border:none;height:1px;backgroun
 <body>
 <div class="wrap">
   <div class="card panel">
-    <h1>ホイスト + チェーン①② + ワーク（直角拘束/RATTLE）</h1>
+    <h1>ホイスト + チェーン①② + ワーク（直角拘束＋ヒンジ固定）</h1>
     <div class="legend">
-      交点③（チェーン②とワーク）は<strong>常に直角</strong>。剛体長は RATTLE（Velocity‑Verlet）で厳密化。<br>
+      交点③（チェーン②とワークのヒンジ）は<strong>常に直角</strong>かつ<strong>初期位置に固定</strong>。剛体長は RATTLE（Velocity‑Verlet）で厳密化。<br>
       操作：<span class="kbd">←</span>/<span class="kbd">→</span>=±1.0 m/s²、<span class="kbd">Space</span>=ブレーキ、<span class="kbd">P</span>=一時停止、<span class="kbd">R</span>=リセット
     </div>
     <h2>パラメータ</h2>
@@ -52,62 +52,67 @@ canvas{width:100%;height:100%;display:block} hr{border:none;height:1px;backgroun
 </div>
 
 <script>
-/* ===== 基本 ===== */
+/* ========== 基本ユーティリティ ========== */
 const g=9.81, DEG=180/Math.PI;
 const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
 const DPR=Math.max(1,window.devicePixelRatio||1);
-function resize(){const r=cv.getBoundingClientRect(); const w=Math.floor(r.width*DPR), h=Math.floor(r.height*DPR); if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h;}}
-function ppm(){const W=cv.width,H=cv.height; return Math.max(Math.min(W/10,H/7),80);}
+function resize(){const r=cv.getBoundingClientRect();const w=Math.floor(r.width*DPR),h=Math.floor(r.height*DPR);if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h;}}
+function ppm(){const W=cv.width,H=cv.height;return Math.max(Math.min(W/10,H/7),80);}
 window.addEventListener('resize',resize); resize();
 function clamp(v,lo,hi){return v<lo?lo:(v>hi?hi:v);}
 function R(ang){const c=Math.cos(ang),s=Math.sin(ang);return {c,s};}
 
-/* ===== UI ===== */
+/* ========== UI ========== */
 const ref={L1:gi('L1'),L2:gi('L2'),mwork:gi('mwork'),dt:gi('dt'),T:gi('T'),amax:gi('amax'),vmax:gi('vmax')};
 function gi(id){return document.getElementById(id);}
 function params(){return{L1:+ref.L1.value,L2:+ref.L2.value,m1:0.1,m2:0.1,mw:+ref.mwork.value,dt:+ref.dt.value,T:+ref.T.value,amax:+ref.amax.value,vmax:+ref.vmax.value};}
 let P=params();
 const statusEl=document.getElementById('status'), readout=document.getElementById('readout');
 
-/* ===== 幾何（ワーク寸法） ===== */
-const Ww=0.90, Hw=0.60;               // 青四角の幅・高さ [m]
-function Iw(){return (P.mw*(Ww*Ww + Hw*Hw))/12;}  // 慣性 [kg·m²]
+/* ========== 幾何（ワーク寸法） ========== */
+const Ww=0.90, Hw=0.60;
+function Iw(){return (P.mw*(Ww*Ww + Hw*Hw))/12;}
 
-/* ===== 状態（q:7, v:7） =====
-   q = [x1,y1, xh,yh, xw,yw, φ]
-   v = [vx1,vy1, vxh,vyh, vxw,vyw, ω]
-   上端(0,y=0)の支持点 x0(t) は運動学で与える
+/* ========== 状態 ========== */
+/*  q = [x1,y1, xh,yh, xw,yw, φ]
+    v = [vx1,vy1, vxh,vyh, vxw,vyw, ω]
 */
 let state={
   t:0, x0:0, v0:0, a0:0,
-  q:[0,0,0,0,0,0,0],
-  v:[0,0,0,0,0,0,0],
+  q:[0,0,0,0,0,0,0], v:[0,0,0,0,0,0,0],
   th1:0, th2:0, vwx:0
 };
 let keyL=false,keyR=false,keyBrake=false,paused=false;
 
-/* ===== Excel バッファ ===== */
+/* 交点③（ヒンジ）の固定座標（初期時に設定） */
+let XH0=0, YH0=0;
+
+/* ========== Excel バッファ ========== */
 let dataTime=[], dataTh1=[], dataTh2=[], dataVx=[];
 
-/* ===== 初期化 ===== */
+/* ========== 初期化 ========== */
 function reset(){
   P=params();
   state.t=0; state.x0=0; state.v0=0; state.a0=0;
-  // 初期：鉛直静止・直角。ヒンジは (0,-L1-L2)、ワークCOMはその下に Hw/2
+
   const x1=0, y1=-P.L1;
   const xh=0, yh=-(P.L1+P.L2);
   const phi=0;
   const xw=0, yw=yh - Hw/2;
+
   state.q=[x1,y1, xh,yh, xw,yw, phi];
   state.v=[0,0, 0,0, 0,0, 0];
+
+  // 交点③の固定位置（初期の世界座標）
+  XH0=xh; YH0=yh;
+
   dataTime=[]; dataTh1=[]; dataTh2=[]; dataVx=[];
-  paused=false;
+  paused=false; statusEl.textContent='Reset done.';
   updateKinematicsAndDraw();
-  statusEl.textContent='Reset done.';
 }
 reset();
 
-/* ===== 入力（ホイスト） ===== */
+/* ========== 入力（ホイスト） ========== */
 addEventListener('keydown',e=>{
   if(e.code==='ArrowLeft')keyL=true;
   if(e.code==='ArrowRight')keyR=true;
@@ -121,44 +126,61 @@ addEventListener('keyup',e=>{
   if(e.code==='Space')keyBrake=false;
 });
 
-/* ===== RATTLE 補助 ===== */
+/* ========== RATTLE 補助 ========== */
 function Minv(){return [1/P.m1,1/P.m1, 1/P.m2,1/P.m2, 1/P.mw,1/P.mw, 1/Iw()];}
+
+/* 拘束式（7本）：
+   φ1  : |(x1-x0,y1)|=L1
+   φ2  : |(xh-x1,yh-y1)|=L2
+   φ3x : xh - (xw + Hw/2*sinφ) = 0
+   φ3y : yh - (yw + Hw/2*cosφ) = 0
+   φ4  : (xh-x1)*cosφ + (yh-y1)*sinφ = 0   // 直角
+   φ5x : xh - XH0 = 0                      // ヒンジ位置固定（x）
+   φ5y : yh - YH0 = 0                      // ヒンジ位置固定（y）
+*/
 function buildConstraints(q,x0){
   const L1=P.L1,L2=P.L2;
   const x1=q[0],y1=q[1], xh=q[2],yh=q[3], xw=q[4],yw=q[5], phi=q[6];
   const {c:cp,s:sp}=R(phi);
-  // φ1: chain1 長
+  const dx2=(xh-x1), dy2=(yh-y1);
+
   const phi1 = 0.5*((x1-x0)*(x1-x0) + y1*y1 - L1*L1);
   const J1 = [(x1-x0), y1, 0,0, 0,0, 0];
-  // φ2: chain2 長
-  const dx2=(xh-x1), dy2=(yh-y1);
+
   const phi2 = 0.5*(dx2*dx2 + dy2*dy2 - L2*L2);
-  const J2 = [-(dx2), -(dy2), (dx2),(dy2), 0,0, 0];
-  // φ3: ヒンジ位置 = ワーク上面中央
+  const J2 = [-dx2, -dy2, dx2, dy2, 0,0, 0];
+
   const phi3x = xh - (xw + (Hw/2)*sp);
-  const phi3y = yh - (yw + (Hw/2)*cp);
   const J3 = [0,0, 1,0, -1,0, (Hw/2)*cp];
+
+  const phi3y = yh - (yw + (Hw/2)*cp);
   const J4 = [0,0, 0,1, 0,-1, -(Hw/2)*sp];
-  // φ4: 直角拘束（u2・t_w=0）
+
   const phi4 = dx2*cp + dy2*sp;
-  const J5 = [-cp, -sp, +cp, +sp, 0,0,  -(dx2*sp - dy2*cp) ];
-  return {phi:[phi1,phi2,phi3x,phi3y,phi4], J:[J1,J2,J3,J4,J5]};
+  const J5 = [-cp, -sp, +cp, +sp, 0,0, -(dx2*sp - dy2*cp)];
+
+  const phi5x = xh - XH0;
+  const J6 = [0,0, 1,0, 0,0, 0];
+
+  const phi5y = yh - YH0;
+  const J7 = [0,0, 0,1, 0,0, 0];
+
+  return {phi:[phi1,phi2,phi3x,phi3y,phi4,phi5x,phi5y], J:[J1,J2,J3,J4,J5,J6,J7]};
 }
-function JTMinvJ(a,b){ // a,b: 7要素
+function JTMinvJ(a,b){
   return (a[0]*b[0]/P.m1)+(a[1]*b[1]/P.m1)+(a[2]*b[2]/P.m2)+(a[3]*b[3]/P.m2)+(a[4]*b[4]/P.mw)+(a[5]*b[5]/P.mw)+(a[6]*b[6]/Iw());
 }
-function Kmatrix(J){ // 5x5 対称
-  const n=5; const K=Array.from({length:n},()=>Array(n).fill(0));
-  for(let r=0;r<n;r++)for(let c=r;c<n;c++){ const v=JTMinvJ(J[r],J[c]); K[r][c]=v; K[c][r]=v; }
+function Kmatrix(J){
+  const n=J.length; const K=Array.from({length:n},()=>Array(n).fill(0));
+  for(let r=0;r<n;r++)for(let c=r;c<n;c++){const v=JTMinvJ(J[r],J[c]);K[r][c]=v;K[c][r]=v;}
   return K;
 }
-function solveLinear(A,b){ // 単純ガウス消去（n<=5）
-  const n=b.length; const M=A.map(r=>r.slice()); const x=b.slice(); // bを使い回し
+function solveLinear(A,b){ // 小規模ガウス
+  const n=b.length; const M=A.map(r=>r.slice()); const x=b.slice();
   for(let i=0;i<n;i++){
-    // pivot
     let piv=i; for(let r=i+1;r<n;r++) if(Math.abs(M[r][i])>Math.abs(M[piv][i])) piv=r;
     if(Math.abs(M[piv][i])<1e-14) return Array(n).fill(0);
-    if(piv!==i){ [M[i],M[piv]]=[M[piv],M[i]]; const t=x[i]; x[i]=x[piv]; x[piv]=t; }
+    if(piv!==i){[M[i],M[piv]]=[M[piv],M[i]]; const t=x[i]; x[i]=x[piv]; x[piv]=t;}
     const aii=M[i][i];
     for(let j=i;j<n;j++) M[i][j]/=aii; x[i]/=aii;
     for(let r=0;r<n;r++){ if(r===i) continue; const f=M[r][i]; if(f===0) continue; for(let j=i;j<n;j++) M[r][j]-=f*M[i][j]; x[r]-=f*x[i]; }
@@ -166,68 +188,64 @@ function solveLinear(A,b){ // 単純ガウス消去（n<=5）
   return x;
 }
 
-/* ===== 1ステップ（RATTLE） ===== */
+/* ========== 1 ステップ（RATTLE） ========== */
 function stepOnce(){
   const dt=P.dt;
   // 1) ホイスト運動学
   let ax=0; if(keyL)ax-=P.amax; if(keyR)ax+=P.amax; if(keyBrake){ ax=clamp(-state.v0/dt, -P.amax, P.amax); }
   state.a0=ax; state.v0=clamp(state.v0+ax*dt, -P.vmax, P.vmax);
-  const x0_old=state.x0, v0_old=state.v0;
   state.x0 += state.v0*dt;
 
   // 2) 半ステップ加速（重力）
   const f=[0,-P.m1*g, 0,-P.m2*g, 0,-P.mw*g, 0];
-  const Minv=[1/P.m1,1/P.m1, 1/P.m2,1/P.m2, 1/P.mw,1/P.mw, 1/Iw()];
+  const Minv= [1/P.m1,1/P.m1, 1/P.m2,1/P.m2, 1/P.mw,1/P.mw, 1/Iw()];
   for(let i=0;i<7;i++) state.v[i] += Minv[i]*f[i]*0.5*dt;
 
   // 3) 予測位置
-  let q = state.q.slice(); for(let i=0;i<7;i++) q[i]+=state.v[i]*dt;
+  let q=state.q.slice(); for(let i=0;i<7;i++) q[i]+=state.v[i]*dt;
 
-  // 4) 位置拘束（x0(t+dt) を用いる） Newton投影
-  for(let it=0; it<6; it++){
+  // 4) 位置拘束（x0(t+dt)）反復投影
+  for(let it=0; it<8; it++){
     const {phi,J}=buildConstraints(q, state.x0);
     const K=Kmatrix(J);
-    const lambda=solveLinear(K, phi);
+    const lam=solveLinear(K, phi);
     // q ← q - M^-1 J^T λ
-    const JTlam=[0,0,0,0,0,0,0];
-    for(let k=0;k<5;k++) for(let j=0;j<7;j++) JTlam[j]+=J[k][j]*lambda[k];
-    for(let j=0;j<7;j++) q[j] -= Minv[j]*JTlam[j];
-    if(Math.max(...phi.map(x=>Math.abs(x)))<1e-11) break;
+    const JTlam=new Array(7).fill(0);
+    for(let k=0;k<J.length;k++) for(let j=0;j<7;j++) JTlam[j]+=J[k][j]*lam[k];
+    for(let j=0;j<7;j++) q[j]-=Minv[j]*JTlam[j];
+    if(Math.max(...phi.map(Math.abs))<1e-11) break;
   }
 
-  // 5) 速度拘束（J v + c = 0）, c = [-(x1-x0)*x0dot, 0,0,0,0]
+  // 5) 速度拘束（J v + c = 0）, c = [-(x1-x0)*x0dot, 0,0,0,0, 0,0]
   {
     const {J}=buildConstraints(q, state.x0);
-    const cvec=[-(q[0]-state.x0)*state.v0, 0,0,0,0];
+    const cvec=[-(q[0]-state.x0)*state.v0, 0,0,0,0, 0,0];
     const K=Kmatrix(J);
-    // rhs = J v + c
-    const rhs=new Array(5).fill(0);
-    for(let k=0;k<5;k++){ for(let j=0;j<7;j++) rhs[k]+=J[k][j]*state.v[j]; rhs[k]+=cvec[k]; }
+    const rhs=new Array(J.length).fill(0);
+    for(let k=0;k<J.length;k++){ for(let j=0;j<7;j++) rhs[k]+=J[k][j]*state.v[j]; rhs[k]+=cvec[k]; }
     const beta=solveLinear(K, rhs);
-    // v ← v - M^-1 J^T β
-    const JTbeta=[0,0,0,0,0,0,0];
-    for(let k=0;k<5;k++) for(let j=0;j<7;j++) JTbeta[j]+=J[k][j]*beta[k];
-    for(let j=0;j<7;j++) state.v[j] -= Minv[j]*JTbeta[j];
+    const JTbeta=new Array(7).fill(0);
+    for(let k=0;k<J.length;k++) for(let j=0;j<7;j++) JTbeta[j]+=J[k][j]*beta[k];
+    for(let j=0;j<7;j++) state.v[j]-=Minv[j]*JTbeta[j];
   }
 
   // 6) 半ステップ加速（重力）
   for(let i=0;i<7;i++) state.v[i] += Minv[i]*f[i]*0.5*dt;
 
   // 7) 状態更新
-  state.q = q;
+  state.q=q;
 
-  // 8) ログ・角度算出
-  const x1=q[0],y1=q[1], xh=q[2],yh=q[3], phi=q[6];
-  const th1 = Math.atan2( (x1 - state.x0), -y1 );
-  const th2 = Math.atan2( (xh - x1), -(yh - y1) );
-  state.th1=th1; state.th2=th2;
-  state.vwx=state.v[4]; // ワーク COM の vx
+  // 8) ログ
+  const x1=q[0],y1=q[1], xh=q[2],yh=q[3];
+  const th1=Math.atan2( (x1-state.x0), -y1 );
+  const th2=Math.atan2( (xh-x1), -(yh-y1) );
+  state.th1=th1; state.th2=th2; state.vwx=state.v[4];
 
   dataTime.push(state.t); dataTh1.push(th1*DEG); dataTh2.push(th2*DEG); dataVx.push(state.vwx);
   state.t+=dt;
 }
 
-/* ===== 描画 ===== */
+/* ========== 描画 ========== */
 function updateKinematicsAndDraw(){
   const W=cv.width,H=cv.height,s=ppm(), ox=W*0.5, oy=H*0.2, sx=x=>ox+x*s, sy=y=>oy-y*s;
   const q=state.q, x0=state.x0; const x1=q[0],y1=q[1], xh=q[2],yh=q[3], xw=q[4],yw=q[5], phi=q[6];
@@ -250,11 +268,15 @@ function updateKinematicsAndDraw(){
   ctx.beginPath(); ctx.arc(sx(x1),sy(y1),3,0,Math.PI*2); ctx.fill();
   ctx.beginPath(); ctx.arc(sx(xh),sy(yh),3,0,Math.PI*2); ctx.fill();
 
-  // work rectangle（center xw,yw, angle φ）
+  // fixed hinge marker (XH0,YH0)
+  ctx.strokeStyle='#ddd'; ctx.lineWidth=2; ctx.beginPath();
+  ctx.moveTo(sx(XH0)-6, sy(YH0)-6); ctx.lineTo(sx(XH0)+6, sy(YH0)+6);
+  ctx.moveTo(sx(XH0)-6, sy(YH0)+6); ctx.lineTo(sx(XH0)+6, sy(YH0)-6);
+  ctx.stroke();
+
+  // work rectangle
   ctx.save(); ctx.translate(sx(xw), sy(yw)); ctx.rotate(-phi);
   ctx.fillStyle='rgba(127,182,255,0.9)'; ctx.fillRect(-Ww*s/2, -Hw*s/2, Ww*s, Hw*s);
-  // 上面の法線を描く（デバッグ）
-  ctx.strokeStyle='#fff8'; ctx.beginPath(); ctx.moveTo(0, -Hw*s/2); ctx.lineTo(0, -Hw*s/2 - 0.4*s); ctx.stroke();
   ctx.restore();
 
   readout.textContent =
@@ -262,7 +284,7 @@ function updateKinematicsAndDraw(){
     `θ1=${(state.th1*DEG).toFixed(2)} deg  θ2=${(state.th2*DEG).toFixed(2)} deg   vx(work)=${state.vwx.toFixed(3)} m/s`;
 }
 
-/* ===== ループ ===== */
+/* ========== ループ ========== */
 let last=performance.now(), acc=0;
 function loop(now){
   const el=(now-last)/1000; last=now;
@@ -271,7 +293,7 @@ function loop(now){
 }
 requestAnimationFrame(loop);
 
-/* ===== Excel ===== */
+/* ========== Excel 出力 ========== */
 function downloadExcel(){
   if(dataTime.length===0){ statusEl.textContent='データがありません。開始して少し動かしてください。'; return; }
   const wb=XLSX.utils.book_new();
@@ -279,10 +301,10 @@ function downloadExcel(){
   const ws1=XLSX.utils.aoa_to_sheet(rows1); XLSX.utils.book_append_sheet(wb,ws1,'Angles');
   const rows2=[['time [s]','work vx [m/s]']]; for(let i=0;i<dataTime.length;i++) rows2.push([+dataTime[i].toFixed(6), +dataVx[i].toFixed(6)]);
   const ws2=XLSX.utils.aoa_to_sheet(rows2); XLSX.utils.book_append_sheet(wb,ws2,'Work_Vx');
-  XLSX.writeFile(wb,'hoist_twochains_rightangle.xlsx'); statusEl.textContent='Excel を出力しました。';
+  XLSX.writeFile(wb,'hoist_twochains_fixedhinge.xlsx'); statusEl.textContent='Excel を出力しました。';
 }
 
-/* ===== ボタン ===== */
+/* ========== ボタン ========== */
 document.getElementById('start').onclick=()=>{paused=false; statusEl.textContent='Running';};
 document.getElementById('pause').onclick=()=>{paused=true; statusEl.textContent='Paused';};
 document.getElementById('reset').onclick=reset;
