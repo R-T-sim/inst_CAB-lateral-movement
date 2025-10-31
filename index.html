@@ -13,7 +13,7 @@ html,body{height:100%} body{margin:0;background:var(--bg);color:var(--fg);font-f
 h1{font-size:18px;margin:0 0 6px} h2{font-size:13px;margin:8px 0 2px;color:var(--muted);font-weight:600}
 .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .row label{min-width:120px;font-size:12px;color:var(--muted)}
-input[type=number]{width:100px;padding:.35rem .5rem;border-radius:10px;border:1px solid #2a3a6a;background:#0e1633;color:var(--fg)}
+input[type=number]{width:110px;padding:.35rem .5rem;border-radius:10px;border:1px solid #2a3a6a;background:#0e1633;color:var(--fg)}
 .btn{background:linear-gradient(180deg,#3a76ff,#2b59d9);border:none;color:#fff;border-radius:12px;padding:9px 12px;cursor:pointer;font-weight:600}
 .btn.secondary{background:#19254a;color:var(--fg);border:1px solid #2a3a6a}
 .legend{font-size:12px;color:var(--muted)} .out{white-space:pre-wrap;background:#0e152e;padding:8px;border-radius:10px}
@@ -27,13 +27,13 @@ canvas{width:100%;height:100%;display:block} hr{border:none;height:1px;backgroun
   <div class="card panel">
     <h1>ホイスト + チェーン①② + ワーク（直角拘束＋取り付け点はワーク局所で固定）</h1>
     <div class="legend">
-      交点③（チェーン②とワークのヒンジ）は<strong>ワーク上の初期位置に対して局所固定</strong>（ボディ固定）。<br>
-      チェーン②は<strong>ワーク上面に常に直角</strong>。剛体長は RATTLE で厳密化。<br>
+      交点③（チェーン②取付）は<strong>ワーク局所で固定</strong>。チェーン②は<strong>上面に常に直角</strong>。剛体長は RATTLE で厳密化。<br>
       操作：<span class="kbd">←</span>/<span class="kbd">→</span>=±1.0 m/s²、<span class="kbd">Space</span>=ブレーキ、<span class="kbd">P</span>=一時停止、<span class="kbd">R</span>=リセット
     </div>
     <h2>パラメータ</h2>
-    <div class="row"><label>L1 [m]</label><input id="L1" type="number" step="0.01" value="1.50"></div>
-    <div class="row"><label>L2 [m]</label><input id="L2" type="number" step="0.01" value="1.80"></div>
+    <div class="row"><label>L1 [m]（チェーン①）</label><input id="L1" type="number" step="0.01" value="1.50"></div>
+    <div class="row"><label>L2 [m]（チェーン②）</label><input id="L2" type="number" step="0.01" value="1.80"></div>
+    <div class="row"><label>hinge rx [m]（上面中心→取付の横ずれ）</label><input id="rx" type="number" step="0.01" value="0.25"></div>
     <div class="row"><label>Work mass [kg]</label><input id="mwork" type="number" step="1" value="400"></div>
     <div class="row"><label>dt [s]</label><input id="dt" type="number" step="0.0005" value="0.001"></div>
     <div class="row"><label>Total time [s]</label><input id="T" type="number" step="0.1" value="12"></div>
@@ -64,9 +64,9 @@ function clamp(v,lo,hi){return v<lo?lo:(v>hi?hi:v);}
 function R(ang){const c=Math.cos(ang),s=Math.sin(ang);return {c,s};}
 
 /* ===== UI ===== */
-const ref={L1:gi('L1'),L2:gi('L2'),mwork:gi('mwork'),dt:gi('dt'),T:gi('T'),amax:gi('amax'),vmax:gi('vmax')};
+const ref={L1:gi('L1'),L2:gi('L2'),mwork:gi('mwork'),dt:gi('dt'),T:gi('T'),amax:gi('amax'),vmax:gi('vmax'),rx:gi('rx')};
 function gi(id){return document.getElementById(id);}
-function params(){return{L1:+ref.L1.value,L2:+ref.L2.value,m1:0.1,m2:0.1,mw:+ref.mwork.value,dt:+ref.dt.value,T:+ref.T.value,amax:+ref.amax.value,vmax:+ref.vmax.value};}
+function params(){return{L1:+ref.L1.value,L2:+ref.L2.value,m1:0.1,m2:0.1,mw:+ref.mwork.value,dt:+ref.dt.value,T:+ref.T.value,amax:+ref.amax.value,vmax:+ref.vmax.value,rx:+ref.rx.value};}
 let P=params();
 const statusEl=document.getElementById('status'), readout=document.getElementById('readout');
 
@@ -78,14 +78,10 @@ function Iw(){return (P.mw*(Ww*Ww + Hw*Hw))/12;}
    q = [x1,y1, xh,yh, xw,yw, φ]
    v = [vx1,vy1, vxh,vyh, vxw,vyw, ω]
 */
-let state={
-  t:0, x0:0, v0:0, a0:0,
-  q:[0,0,0,0,0,0,0], v:[0,0,0,0,0,0,0],
-  th1:0, th2:0, vwx:0
-};
+let state={ t:0, x0:0, v0:0, a0:0, q:[0,0,0,0,0,0,0], v:[0,0,0,0,0,0,0], th1:0, th2:0, vwx:0 };
 let keyL=false,keyR=false,keyBrake=false,paused=false;
 
-/* === 取り付け点の「ワーク局所」オフセット r_local（初期化時に確定して保持） === */
+/* 交点③のワーク局所オフセット r_local = [rlx, rly]（初期時決定→固定） */
 let rlx=0, rly=0;
 
 /* ===== Excel ログ ===== */
@@ -96,21 +92,26 @@ function reset(){
   P=params();
   state.t=0; state.x0=0; state.v0=0; state.a0=0;
 
-  // 初期：鉛直。ヒンジはワーク上面中央にしておく（一般化されているので後で変更可）
-  const x1=0, y1=-P.L1;
-  const xh=0, yh=-(P.L1+P.L2);
-  const phi=0;
-  const xw=0, yw=yh - Hw/2;
+  // 取り付け局所：x=rx, y=+Hw/2（上面）
+  rlx = clamp(P.rx, -(P.L1-0.02), (P.L1-0.02));   // L1 が届く範囲にクランプ
+  rly =  Hw/2;
+
+  // φ=0, xw=0 とし、拘束が成り立つ初期姿勢を構成
+  const phi=0, cp=1, sp=0;
+  const xh = 0 + rlx;               // xw=0 → xh=rlx
+  const x1 = xh;                     // 初期はチェーン②を鉛直に置き、直角拘束を厳守
+  const x0 = state.x0;               // hoist anchor
+  const dx = (x1-x0);
+  if(Math.abs(dx) >= P.L1){          // 物理的に届かないパラメータ保護
+    statusEl.textContent='rx が大きすぎます。L1 より小さくしてください。';
+  }
+  const y1 = -Math.sqrt(Math.max(1e-8, P.L1*P.L1 - dx*dx));
+  const yh = y1 - P.L2;
+  const yw = yh - rly;
+  const xw = 0;
 
   state.q=[x1,y1, xh,yh, xw,yw, phi];
   state.v=[0,0, 0,0, 0,0, 0];
-
-  // ★ ワーク局所での取り付けオフセット r_local を保存（以後、ずっと固定）
-  // r_local = R(-phi0) * ([xh,yh] - [xw,yw])
-  const {c:cp0,s:sp0}=R(phi);
-  const dx0=xh-xw, dy0=yh-yw;
-  rlx =  cp0*dx0 + sp0*dy0;   // 局所 x 成分
-  rly = -sp0*dx0 + cp0*dy0;   // 局所 y 成分
 
   dataTime=[]; dataTh1=[]; dataTh2=[]; dataVx=[];
   paused=false; statusEl.textContent='Reset done.';
@@ -134,12 +135,12 @@ addEventListener('keyup',e=>{
 
 /* ===== RATTLE 補助 ===== */
 function Minv(){return [1/P.m1,1/P.m1, 1/P.m2,1/P.m2, 1/P.mw,1/P.mw, 1/Iw()];}
-/* 拘束（計5本）：
+/* 拘束（5本）：
    φ1 : |(x1-x0,y1)|=L1
    φ2 : |(xh-x1,yh-y1)|=L2
-   φ3x: xh - (xw + cosφ*rlx - sinφ*rly) = 0         // ワーク局所固定（x）
-   φ3y: yh - (yw + sinφ*rlx + cosφ*rly) = 0         // ワーク局所固定（y）
-   φ4 : (xh-x1)*cosφ + (yh-y1)*sinφ = 0            // 直角拘束（チェーン② ⟂ 上面接線）
+   φ3x: xh - (xw + cosφ*rlx - sinφ*rly) = 0   // ワーク局所固定
+   φ3y: yh - (yw + sinφ*rlx + cosφ*rly) = 0
+   φ4 : (xh-x1)*cosφ + (yh-y1)*sinφ = 0      // 直角拘束（チェーン② ⟂ 上面）
 */
 function buildConstraints(q,x0){
   const L1=P.L1,L2=P.L2;
@@ -153,18 +154,15 @@ function buildConstraints(q,x0){
   const phi2 = 0.5*(dx2*dx2 + dy2*dy2 - L2*L2);
   const J2 = [-dx2, -dy2, dx2, dy2, 0,0, 0];
 
-  // ボディ固定（R(φ)*r_local で追従）
   const hx_pred = xw + cp*rlx - sp*rly;
   const hy_pred = yw + sp*rlx + cp*rly;
   const phi3x = xh - hx_pred;
   const phi3y = yh - hy_pred;
-  // d/dφ : -(d hx_pred / dφ)
   const d_hx_dphi = -sp*rlx - cp*rly;
   const d_hy_dphi =  cp*rlx - sp*rly;
-  const J3 = [0,0, 1,0, -1,0,  -d_hx_dphi];   // φ3x
-  const J4 = [0,0, 0,1, 0,-1,  -d_hy_dphi];  // φ3y
+  const J3 = [0,0, 1,0, -1,0,  -d_hx_dphi];
+  const J4 = [0,0, 0,1, 0,-1,  -d_hy_dphi];
 
-  // 直角拘束（チェーン② ⟂ 上面接線 t=(cosφ,sinφ)）
   const phi4 = dx2*cp + dy2*sp;
   const J5 = [-cp, -sp, +cp, +sp, 0,0,  -(dx2*sp - dy2*cp)];
 
@@ -207,7 +205,7 @@ function stepOnce(){
   // 3) 予測位置
   let q=state.q.slice(); for(let i=0;i<7;i++) q[i]+=state.v[i]*dt;
 
-  // 4) 位置拘束　（x0(t+dt)）
+  // 4) 位置拘束（反復投影）
   for(let it=0; it<8; it++){
     const {phi,J}=buildConstraints(q, state.x0);
     const K=Kmatrix(J);
@@ -218,7 +216,7 @@ function stepOnce(){
     if(Math.max(...phi.map(Math.abs))<1e-11) break;
   }
 
-  // 5) 速度拘束：J v + c = 0、cは chain1（φ1）のみ時間依存 → c1=-(x1-x0) x0dot
+  // 5) 速度拘束（J v + c = 0） c は chain1 のみ時間依存
   {
     const {J}=buildConstraints(q, state.x0);
     const cvec=[-(q[0]-state.x0)*state.v0, 0,0,0,0];
@@ -240,7 +238,7 @@ function stepOnce(){
   // 8) ログ
   const x1=q[0],y1=q[1], xh=q[2],yh=q[3];
   const th1=Math.atan2( (x1-state.x0), -y1 );
-  const th2=Math.atan2( (xh-x1), -(yh-y1) );
+  const th2=Math.atan2( (xh-x1), -(yh-y1) );   // 鉛直基準の角度
   state.th1=th1; state.th2=th2; state.vwx=state.v[4];
 
   dataTime.push(state.t); dataTh1.push(th1*DEG); dataTh2.push(th2*DEG); dataVx.push(state.vwx);
@@ -251,7 +249,6 @@ function stepOnce(){
 function updateKinematicsAndDraw(){
   const W=cv.width,H=cv.height,s=ppm(), ox=W*0.5, oy=H*0.2, sx=x=>ox+x*s, sy=y=>oy-y*s;
   const q=state.q, x0=state.x0; const x1=q[0],y1=q[1], xh=q[2],yh=q[3], xw=q[4],yw=q[5], phi=q[6];
-  const {c:cp,s:sp}=R(phi);
 
   ctx.clearRect(0,0,W,H);
   // grid
@@ -273,12 +270,8 @@ function updateKinematicsAndDraw(){
   // work
   ctx.save(); ctx.translate(sx(xw), sy(yw)); ctx.rotate(-phi);
   ctx.fillStyle='rgba(127,182,255,0.9)'; ctx.fillRect(-Ww*s/2, -Hw*s/2, Ww*s, Hw*s);
-  // ボディ固定点（r_local）を可視化（薄灰色）
-  ctx.strokeStyle='#bfc7d5aa'; ctx.lineWidth=4;
-  ctx.beginPath();
-  ctx.moveTo( (rlx)*s, (-Hw/2)*s );   // 上面の基準から目安線（簡易）
-  ctx.lineTo( (rlx)*s, (rly)*s );
-  ctx.stroke();
+  // 取付点の目印（局所）
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc( (rlx)*s, (rly)*s - Hw*s/2, 3, 0, Math.PI*2 ); ctx.fill();
   ctx.restore();
 
   readout.textContent =
