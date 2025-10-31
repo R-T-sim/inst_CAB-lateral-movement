@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>CAB 2D – v3（剛体チェーン：伸び無し / フレーム粘性無視）</title>
+<style>
+:root{--bg:#0b1020;--fg:#e8eef9;--muted:#9fb3d9;--card:#121a33;--good:#26d07c;--arm:#ff5a5a;--cab:#7fb6ff}
+html,body{height:100%} body{margin:0;background:var(--bg);color:var(--fg);
+font-family:system-ui,-apple-system,Segoe UI,Roboto,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif}
+.wrap{display:grid;grid-template-columns:380px 1fr;gap:14px;height:100%;padding:14px;box-sizing:border-box}
+.card{background:var(--card);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.panel{padding:14px 14px 10px;display:flex;flex-direction:column;gap:10px}
+h1{font-size:18px;margin:0 0 6px} h2{font-size:13px;margin:8px 0 2px;color:var(--muted);font-weight:600}
+.row{display:flex;align-items:center;gap:10px} .row label{min-width:170px;font-size:12px;color:var(--muted)}
+input[type=range]{width:100%} .btn{background:linear-gradient(180deg,#3a76ff,#2b59d9);border:none;color:#fff;border-radius:12px;padding:9px 12px;cursor:pointer;font-weight:600}
+.btn.secondary{background:#19254a;color:var(--fg);border:1px solid #2a3a6a}
+.kbd{display:inline-block;padding:2px 8px;border-radius:8px;background:#10172a;border:1px solid #1d2744;font-size:12px;color:var(--muted)}
+.legend{font-size:12px;color:var(--muted)} canvas{width:100%;height:100%;display:block}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card panel">
+    <div>
+      <h1>ホイスト（緑：操作）＋ 吊具フレーム＆アーム（赤：受動）＋ CAB（青）</h1>
+      <div class="legend">原点=フック(0,0), X右＋/Y上＋, 単位=mm。重力は下向き 9.8 m/s²。台車は |v| ≤ 0.3 m/s。<br>v3では <b>チェーン＝剛体長（伸び無し）</b>、<b>フレーム粘性を無視</b>（0）にしています。</div>
+    </div>
+
+    <h2>ホイスト</h2>
+    <div class="row"><label>指令加速度 a_cmd [mm/s²]</label><input id="acmd" type="range" min="100" max="4000" step="50"><span id="acmdv"></span></div>
+    <div class="row"><label>速度上限 |vᵗ|max [mm/s]</label><input id="vmax" type="range" min="50" max="600" step="10"><span id="vmaxv"></span></div>
+    <div class="row"><label>台車粘性 cᵗ [1/s]</label><input id="cd" type="range" min="0" max="2" step="0.02"><span id="cdv"></span></div>
+
+    <div class="row" style="gap:12px;margin-top:6px;flex-wrap:wrap">
+      <button class="btn" id="reset">リセット</button>
+      <button class="btn secondary" id="pause">一時停止</button>
+    </div>
+
+    <h2>吊具フレーム</h2>
+    <div class="row"><label>フレーム質量 m_f [kg]</label><input id="mf" type="range" min="10" max="500" step="5"><span id="mfv"></span></div>
+    <div class="row"><label>チェーン長 Lc [mm]</label><input id="Lc" type="range" min="50" max="600" step="5"><span id="Lcv"></span></div>
+    <div class="legend">※v3では「フレーム粘性 c_f / 回転粘性 c_Frot」は <b>無視（常に0）</b> です。</div>
+
+    <h2>アーム形状（落とし→ひざ→縦棒→棚＋返し）</h2>
+    <div class="row"><label>落とし L_drop [mm]</label><input id="ldrop" type="range" min="40" max="800" step="5"><span id="ldropv"></span></div>
+    <div class="row"><label>ひざ 外 L_knee [mm]</label><input id="lknee" type="range" min="40" max="600" step="5"><span id="lkneev"></span></div>
+    <div class="row"><label>ひざ 下 D_knee [mm]</label><input id="dknee" type="range" min="40" max="600" step="5"><span id="dkneev"></span></div>
+    <div class="row"><label>縦棒 L_vert [mm]</label><input id="lvert" type="range" min="200" max="3000" step="10"><span id="lvertv"></span></div>
+    <div class="row"><label>棚長 Ls [mm]</label><input id="slen" type="range" min="40" max="800" step="5"><span id="slenv"></span></div>
+    <div class="row"><label>返し高さ H_lip [mm]</label><input id="hlip" type="range" min="10" max="200" step="2"><span id="hlipv"></span></div>
+
+    <h2>CAB（青）</h2>
+    <div class="row"><label>質量 m [kg]</label><input id="mass" type="range" min="50" max="3000" step="10"><span id="massv"></span></div>
+    <div class="row"><label>幅 W [mm]</label><input id="W" type="range" min="400" max="4000" step="10"><span id="Wv"></span></div>
+    <div class="row"><label>高さ H [mm]</label><input id="H" type="range" min="400" max="4000" step="10"><span id="Hv"></span></div>
+    <div class="row"><label>初期 COM X [mm]</label><input id="cx0" type="range" min="-4000" max="4000" step="1"><span id="cx0v"></span></div>
+    <div class="row"><label>摩擦係数 μ</label><input id="mu" type="range" min="0" max="1" step="0.01"><span id="muv"></span></div>
+    <div class="row"><label>回転減衰 cφ [N·m·s/rad]</label><input id="cdphi" type="range" min="0" max="200" step="1"><span id="cdphiv"></span></div>
+
+    <div class="legend" style="margin-top:8px">
+      操作：<span class="kbd">←</span><span class="kbd">→</span> = 台車加減速（|v|≤0.3m/s）、<span class="kbd">Space</span> = ブレーキ、<span class="kbd">P</span> = 一時停止、<span class="kbd">R</span> = リセット
+    </div>
+    <pre id="readout" class="legend" style="background:#0e152e;padding:8px;border-radius:10px;white-space:pre-wrap"></pre>
+  </div>
+
+  <div class="card" style="position:relative;overflow:hidden"><canvas id="cv"></canvas></div>
+</div>
+
+<script>
+const DEFAULTS = {"a_cmd": 1500.0, "vmax": 300.0, "ccart": 0.26, "mF": 180.0, "Lc": 500.0, "frameSpan": 2340.0, "frameH": 120.0, "anchor_x": 0.0, "anchor_y": 0.0, "pivotL_x": -700.0, "pivotL_y": -120.0, "pivotR_x": 700.0, "pivotR_y": -120.0, "L_drop": 0.0, "L_knee_out": 74.0, "L_knee_down": 190.0, "L_vert": 540.0, "Ls": 85.0, "H_lip": 39.0, "mArm": 22.0, "cArm": 10.0, "L_st_min": -180.0, "L_st_max": -90.0, "R_st_min": -90.0, "R_st_max": 0.0, "m": 400.0, "Wmm": 1800.0, "Hmm": 1200.0, "cx0": 7.0, "cy0": -1800.0, "groove_depth": 80.0, "groove_offx": 60.0, "mu": 0.3, "R_drop": 0.0, "R_knee_out": 74.0, "R_knee_down": 190.0, "R_vert": 540.0, "R_shelf_len": 85.0, "R_lip_height": 39.0};
+</script>
+
+<script>
+(function(){
+  const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
+  const DPR=Math.max(1,window.devicePixelRatio||1);
+  function resize(){const r=cv.getBoundingClientRect();const w=Math.max(2,Math.floor(r.width*DPR)),h=Math.max(2,Math.floor(r.height*DPR)); if(cv.width!==w||cv.height!==h){cv.width=w;cv.height=h;}};
+  window.addEventListener('resize',resize); resize();
+  function PPM(){const W=cv.width,H=cv.height;return Math.max(Math.min(W/6000,H/4200),0.08);}
+
+  function bind(id, lab, setter, fmt){const s=document.getElementById(id),l=document.getElementById(lab);const apply=()=>{const v=parseFloat(s.value);setter(v);l.textContent=fmt?fmt(v):String(v)};s.addEventListener('input',apply);return{s,l,apply};}
+
+  let a_cmd=DEFAULTS.a_cmd??1500, vmax=DEFAULTS.vmax??300, ccart=DEFAULTS.ccart??0.26;
+  let mF=DEFAULTS.mF??150, Lc=DEFAULTS.Lc??150;
+  let frameSpan=DEFAULTS.frameSpan??2400, frameH=DEFAULTS.frameH??120;
+  let anchor_local={x:DEFAULTS.anchor_x??0, y:DEFAULTS.anchor_y??80};
+  let rootL_local={x:DEFAULTS.pivotL_x??-700, y:DEFAULTS.pivotL_y??-100};
+  let rootR_local={x:DEFAULTS.pivotR_x??700,  y:DEFAULTS.pivotR_y??-100};
+  let L_drop=DEFAULTS.L_drop??220, L_knee=DEFAULTS.L_knee_out??140, D_knee=DEFAULTS.L_knee_down??160, L_vert=DEFAULTS.L_vert??1200, Ls=DEFAULTS.Ls??160, H_lip=DEFAULTS.H_lip??80;
+  let R_drop=DEFAULTS.R_drop??L_drop, R_knee=DEFAULTS.R_knee_out??L_knee, R_kneed=DEFAULTS.R_knee_down??D_knee, R_vert=DEFAULTS.R_vert??L_vert, R_shelf=DEFAULTS.R_shelf_len??Ls, R_lip=DEFAULTS.R_lip_height??H_lip;
+  let mArm=DEFAULTS.mArm??30, cArm=DEFAULTS.cArm??10;
+  let L_st=[(DEFAULTS.L_st_min??-180)*Math.PI/180,(DEFAULTS.L_st_max??-90)*Math.PI/180];
+  let R_st=[(DEFAULTS.R_st_min??-90)*Math.PI/180,(DEFAULTS.R_st_max??0)*Math.PI/180];
+  let m=DEFAULTS.m??400, Wmm=DEFAULTS.Wmm??1800, Hmm=DEFAULTS.Hmm??1200, mu=DEFAULTS.mu??0.30, cdphi=DEFAULTS.cdphi??10;
+  let cx0=DEFAULTS.cx0??7, cy0=DEFAULTS.cy0;
+  const groove_depth=DEFAULTS.groove_depth??80, groove_offx=DEFAULTS.groove_offx??60;
+
+  // sliders
+  const binds=[
+    bind('acmd','acmdv',v=>a_cmd=v,v=>v.toFixed(0)),
+    bind('vmax','vmaxv',v=>vmax=v,v=>v.toFixed(0)),
+    bind('cd','cdv',v=>ccart=v,v=>v.toFixed(2)),
+    bind('mf','mfv',v=>mF=v,v=>v.toFixed(0)),
+    bind('Lc','Lcv',v=>Lc=v,v=>v.toFixed(0)),
+    bind('ldrop','ldropv',v=>{L_drop=v; R_drop=v;},v=>v.toFixed(0)),
+    bind('lknee','lkneev',v=>{L_knee=v; R_knee=v;},v=>v.toFixed(0)),
+    bind('dknee','dkneev',v=>{D_knee=v; R_kneed=v;},v=>v.toFixed(0)),
+    bind('lvert','lvertv',v=>{L_vert=v; R_vert=v;},v=>v.toFixed(0)),
+    bind('slen','slenv',v=>{Ls=v; R_shelf=v;},v=>v.toFixed(0)),
+    bind('hlip','hlipv',v=>{H_lip=v; R_lip=v;},v=>v.toFixed(0)),
+    bind('mass','massv',v=>m=v,v=>v.toFixed(0)),
+    bind('W','Wv',v=>Wmm=v,v=>v.toFixed(0)),
+    bind('H','Hv',v=>Hmm=v,v=>v.toFixed(0)),
+    bind('cx0','cx0v',v=>cx0=v,v=>v.toFixed(0)),
+    bind('mu','muv',v=>mu=v,v=>v.toFixed(2)),
+    bind('cdphi','cdphiv',v=>cdphi=v,v=>v.toFixed(0)),
+  ];
+  const initVals={acmd:a_cmd,vmax:vmax,cd:ccart,mf:mF,Lc:Lc,ldrop:L_drop,lknee:L_knee,dknee:D_knee,lvert:L_vert,slen:Ls,hlip:H_lip,mass:m,W:Wmm,H:Hmm,cx0:cx0,mu:mu,cdphi:cdphi};
+  Object.entries(initVals).forEach(([k,val])=>{const el=document.getElementById(k); if(el) el.value=val;});
+  binds.forEach(b=>b.apply());
+
+  // ===== State =====
+  let t=0, dt=1/600;
+  let xt=0, vt=0;
+  let xF=0, yF=-100, vFx=0, vFy=0, psi=0, wF=0;
+  let thL_rel=-Math.PI/2, wL_rel=0;
+  let thR_rel=-Math.PI/2, wR_rel=0;
+  let cx=cx0, cy=(typeof cy0==='number')?cy0:-1800, cvx=0, cvy=0, phi=0, omega=0;
+
+  const gmm=-9810, g=9.81;
+  function rot(a,v){const c=Math.cos(a),s=Math.sin(a);return {x:c*v.x - s*v.y, y:s*v.x + c*v.y};}
+  function add(a,b){return {x:a.x+b.x,y:a.y+b.y};}
+  function sub(a,b){return {x:a.x-b.x,y:a.y-b.y};}
+  function mul(v,k){return {x:v.x*k,y:v.y*k};}
+  function dot(a,b){return a.x*b.x+a.y*b.y;}
+  function cross(a,b){return a.x*b.y - a.y*b.x;}
+  function len(v){return Math.hypot(v.x,v.y);}
+  function norm(v){const L=len(v)||1;return {x:v.x/L,y:v.y/L};}
+  function posF(local){return add({x:xF,y:yF}, rot(psi, local));}
+  function velAt(local){const r=rot(psi,local); return {x:vFx - wF*r.y, y:vFy + wF*r.x};}
+  function I_frame(){const W=frameSpan/1000,H=frameH/1000; return mF*(W*W+H*H)/12;}
+  function I_cab(){const W=Wmm/1000,H=Hmm/1000; return m*(W*W+H*H)/12;}
+
+  // Controls
+  const btnReset=document.getElementById('reset'), btnPause=document.getElementById('pause'); let paused=false;
+  btnReset.addEventListener('click',()=>reset());
+  btnPause.addEventListener('click',()=>{paused=!paused;btnPause.textContent=paused?'再開':'一時停止';});
+  let keyL=false,keyR=false,brake=false;
+  window.addEventListener('keydown',e=>{if(e.code==='ArrowLeft')keyL=true;if(e.code==='ArrowRight')keyR=true;if(e.code==='Space')brake=true;if(e.key==='r'||e.key==='R')reset();if(e.key==='p'||e.key==='P'){paused=!paused;btnPause.textContent=paused?'再開':'一時停止';}});
+  window.addEventListener('keyup',e=>{if(e.code==='ArrowLeft')keyL=false;if(e.code==='ArrowRight')keyR=false;if(e.code==='Space')brake=false;});
+
+  function reset(){
+    t=0; xt=0; vt=0; psi=0; wF=0; xF=0; yF=-100; vFx=0; vFy=0;
+    thL_rel=-Math.PI/2; thR_rel=-Math.PI/2; wL_rel=0; wR_rel=0;
+    cx=cx0; cvx=0; cvy=0; phi=0; omega=0;
+    // 静置スナップ（左棚高さ）
+    const rootLW=posF(rootL_local); const thL=psi+thL_rel; const dL={x:Math.cos(thL),y:Math.sin(thL)};
+    const SL=add(rootLW, mul(dL, L_drop + D_knee + L_vert));
+    const yG = Hmm/2 - groove_depth; cy = SL.y - yG; cvy=0;
+    paused=false; btnPause.textContent='一時停止';
+  }
+
+  // Rigid chain constraint (velocity-level only, with small Baumgarte to kill drift)
+  function solveChainVelocity(){
+    const A=posF(anchor_local), vA=velAt(anchor_local); // frame-side
+    const H={x:xt,y:0}, vH={x:vt,y:0}; // hoist (kinematic)
+    const r=sub(A,H); const Lr=len(r)||1; const n=mul(r,1/Lr); // along chain (H->A)
+    const c=Lr - Lc; // positive when stretched
+    const cDot=((vA.x-vH.x)*n.x + (vA.y-vH.y)*n.y)/1000; // m/s along n
+    // Effective mass along n
+    const rA=rot(psi,anchor_local); const rAm={x:rA.x/1000,y:rA.y/1000};
+    const K = 1/mF + ((rAm.x*n.y - rAm.y*n.x)**2)/I_frame();
+    // Baumgarte stabilization (beta small): bring length error toward zero without teleport
+    const beta = 0.05; // small
+    let J = - (cDot + beta * Math.max(0,c)/ (dt)) / K; // only act on stretch (tension side)
+    if (J < 0) J = 0; // tension only
+    // Apply impulse to frame velocities (hoist is kinematic)
+    vFx += (1000*J*(-n.x))/mF; vFy += (1000*J*(-n.y))/mF;
+    wF  += ( (rAm.x*(-J*n.y) - rAm.y*(-J*n.x)) )/I_frame();
+  }
+
+  function armGeom(side, rootW, vRoot, thAbs, wAbs){
+    const d={x:Math.cos(thAbs),y:Math.sin(thAbs)};
+    const n={x:-d.x,y:-d.y}; const t={x:-n.y,y:n.x};
+    const out = (side==='L')? t : {x:-t.x,y:-t.y}; const inw = {x:-out.x,y:-out.y};
+
+    const Ld = (side==='L')? L_drop : R_drop;
+    const Lk = (side==='L')? L_knee : R_knee;
+    const Dk = (side==='L')? D_knee : R_kneed;
+    const Lv = (side==='L')? L_vert : R_vert;
+    const Lss= (side==='L')? Ls : R_shelf;
+    const Hlp= (side==='L')? H_lip : R_lip;
+
+    const P0 = rootW;
+    const P1 = add(P0, mul(d, Ld));
+    const P2 = add(P1, add(mul(out, Lk), mul(d, Dk)));
+    const P3 = add(P2, mul(d, Lv));
+    const S0 = P3; // shelf outer end
+    const S1 = add(S0, mul(inw, Lss));
+    const LIP= add(S1, mul(n, Hlp));
+
+    function velOf(p){return {x:vRoot.x - wAbs*(p.y-rootW.y), y:vRoot.y + wAbs*(p.x-rootW.x)};}
+    const vS0=velOf(S0), vS1=velOf(S1);
+
+    const shelfOrigin=S0, shelfN=n, shelfT=inw, vShelf=vS0;
+    const lipOrigin=S1, lipN=out, vLip=vS1;
+
+    return {poly:[P0,P1,P2,P3,S0,S1,LIP], shelfOrigin, shelfN, shelfT, vShelf, lipOrigin, lipN, vLip};
+  }
+
+  function contactPlane(S, VS, n, t, Pc, Vc, rCm, pivotW, applyFrame){
+    const tol=0.5;
+    const d = ( (Pc.x-S.x)*n.x + (Pc.y-S.y)*n.y );
+    const vrel_n = ( (Vc.x - VS.x)*n.x + (Vc.y - VS.y)*n.y )/1000;
+    if(d<=tol && vrel_n<0){
+      const Icab=I_cab(); const K = 1/m + ( ((rCm.x*n.y - rCm.y*n.x)**2) / Icab );
+      const Jn = Math.max(0, -vrel_n / K); const JnV={x:Jn*n.x,y:Jn*n.y};
+      cvx += (1000*JnV.x)/m; cvy += (1000*JnV.y)/m; omega += ( (rCm.x*JnV.y - rCm.y*JnV.x) )/Icab;
+      if(applyFrame){
+        const Jf={x:-JnV.x,y:-JnV.y}; vFx += (1000*Jf.x)/mF; vFy += (1000*Jf.y)/mF;
+        const rPFm={x:(pivotW.x - xF)/1000, y:(pivotW.y - yF)/1000}; wF += ( (rPFm.x*Jf.y - rPFm.y*Jf.x) )/I_frame();
+      }
+      const vrel_t = ( (Vc.x - VS.x)*t.x + (Vc.y - VS.y)*t.y )/1000;
+      const Kt = 1/m + ( ((rCm.x*t.y - rCm.y*t.x)**2) / Icab );
+      const Jt_unc = - vrel_t / Kt; const Jt_mag = Math.min(mu*Jn, Math.abs(Jt_unc)); const Jt = (Jt_unc>=0?+Jt_mag:-Jt_mag);
+      const JtV={x:Jt*t.x,y:Jt*t.y};
+      cvx += (1000*JtV.x)/m; cvy += (1000*JtV.y)/m; omega += ( (rCm.x*JtV.y - rCm.y*JtV.x) )/Icab;
+      if(applyFrame){
+        const Jft={x:-JtV.x,y:-JtV.y}; vFx += (1000*Jft.x)/mF; vFy += (1000*Jft.y)/mF;
+        const rPFm={x:(pivotW.x - xF)/1000, y:(pivotW.y - yF)/1000}; wF += ( (rPFm.x*Jft.y - rPFm.y*Jft.x) )/I_frame();
+      }
+    }
+  }
+
+  function step(){
+    // 1) Hoist control (kinematic)
+    let u=0; if(keyL)u-=a_cmd; if(keyR)u+=a_cmd; if(brake)u+=-3*vt;
+    vt += (u - ccart*vt)*dt; if(vt>vmax)vt=vmax; if(vt<-vmax)vt=-vmax; xt += vt*dt;
+
+    // 2) External forces on bodies (gravity only; frame viscosity ignored)
+    vFy += (gmm/1000)*dt;  // frame linear damping = 0
+    // frame rotational damping ignored: wF unchanged here
+
+    // 3) Chain constraint at VELOCITY level (tension only)
+    solveChainVelocity();
+
+    // 4) Integrate frame pose
+    xF += vFx*dt; yF += vFy*dt; psi += wF*dt;
+
+    // 5) Pivots
+    const rootLW=posF(rootL_local), vRootL=velAt(rootL_local);
+    const rootRW=posF(rootR_local), vRootR=velAt(rootR_local);
+
+    // 6) Arms
+    const thL=psi+thL_rel, wLa=wF+wL_rel; const thR=psi+thR_rel, wRa=wF+wR_rel;
+    const gL=armGeom('L',rootLW,vRootL,thL,wLa), gR=armGeom('R',rootRW,vRootR,thR,wRa);
+
+    // 7) CAB groove points
+    const cph=Math.cos(phi), sph=Math.sin(phi);
+    const yG=Hmm/2 - groove_depth, xL_loc=-Wmm/2 + groove_offx, xR_loc=Wmm/2 - groove_offx;
+    const pCL={x:cx + cph*xL_loc - sph*yG, y:cy + sph*xL_loc + cph*yG};
+    const pCR={x:cx + cph*xR_loc - sph*yG, y:cy + sph*xR_loc + cph*yG};
+    const vCL={x:cvx - omega*(sph*xL_loc + cph*yG), y:cvy + omega*(cph*xL_loc - sph*yG)};
+    const vCR={x:cvx - omega*(sph*xR_loc + cph*yG), y:cvy + omega*(cph*xR_loc - sph*yG)};
+    const rCLm={x:(pCL.x-cx)/1000,y:(pCL.y-cy)/1000}, rCRm={x:(pCR.x-cx)/1000,y:(pCR.y-cy)/1000};
+
+    // 8) Contacts
+    contactPlane(gL.shelfOrigin,gL.vShelf,gL.shelfN,gL.shelfT,pCL,vCL,rCLm,rootLW,true);
+    contactPlane(gR.shelfOrigin,gR.vShelf,gR.shelfN,gR.shelfT,pCR,vCR,rCRm,rootRW,true);
+    const tL={x:-gL.shelfN.y,y:gL.shelfN.x}, tR={x:-gR.shelfN.y,y:gR.shelfN.x};
+    contactPlane(gL.lipOrigin,gL.vLip,gL.lipN,tL,pCL,vCL,rCLm,rootLW,true);
+    contactPlane(gR.lipOrigin,gR.vLip,gR.lipN,tR,pCR,vCR,rCRm,rootRW,true);
+
+    // 9) CAB dynamics
+    cvy += gmm*dt/1000; cx += cvx*dt; cy += cvy*dt; const Icab=I_cab(); omega += (-cdphi*omega/Icab)*dt; phi += omega*dt;
+
+    // 10) Arms gravity + damping (relative)
+    const Lm=(L_drop+D_knee+L_vert)/1000, Rm=(R_drop+R_kneed+R_vert)/1000;
+    const tauLg = - mArm*g*(Lm/2)*Math.cos(thL), tauRg = - mArm*g*(Rm/2)*Math.cos(thR);
+    const IarmL = Math.max(1e-6, mArm*Lm*Lm/3), IarmR = Math.max(1e-6, mArm*Rm*Rm/3);
+    wL_rel += ((tauLg - cArm*wL_rel)/IarmL)*dt; wR_rel += ((tauRg - cArm*wR_rel)/IarmR)*dt;
+    thL_rel += wL_rel*dt; thR_rel += wR_rel*dt;
+
+    // 11) Stoppers
+    if(thL_rel > L_st[1]){thL_rel=L_st[1]; if(wL_rel>0) wL_rel=0;}
+    if(thL_rel < L_st[0]){thL_rel=L_st[0]; if(wL_rel<0) wL_rel=0;}
+    if(thR_rel > R_st[1]){thR_rel=R_st[1]; if(wR_rel>0) wR_rel=0;}
+    if(thR_rel < R_st[0]){thR_rel=R_st[0]; if(wR_rel<0) wR_rel=0;}
+
+    return {gL,gR,rootLW,rootRW,pCL,pCR};
+  }
+
+  // ===== draw =====
+  const readout=document.getElementById('readout');
+  function draw(cache){
+    const s=PPM(); resize();
+    const W=cv.width,H=cv.height; const ox=W*0.5, oy=H*0.15; const sx=x=>ox+x*s, sy=y=>oy-y*s;
+    ctx.clearRect(0,0,W,H);
+    // grid
+    ctx.save(); ctx.strokeStyle='#1b2445'; ctx.lineWidth=1;
+    const g=200; for(let x=-8000;x<=8000;x+=g){ctx.beginPath();ctx.moveTo(sx(x),0);ctx.lineTo(sx(x),H);ctx.stroke();}
+    for(let y=-4000;y<=4000;y+=g){ctx.beginPath();ctx.moveTo(0,sy(y));ctx.lineTo(W,sy(y));ctx.stroke();}
+    ctx.restore();
+
+    // hoist & chain
+    ctx.fillStyle='#26d07c'; const hw=220, hh=120;
+    ctx.fillRect(sx(xt)-hw/2, sy(200)-hh/2, hw, hh);
+    ctx.strokeStyle='#26d07c'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(sx(xt),sy(0)); ctx.lineTo(sx(xt),sy(200)); ctx.stroke();
+    const anchor=posF(anchor_local);
+    ctx.strokeStyle='#7bd6a8'; ctx.lineWidth=3; ctx.beginPath(); ctx.moveTo(sx(xt),sy(0)); ctx.lineTo(sx(anchor.x), sy(anchor.y)); ctx.stroke();
+
+    // frame
+    ctx.save(); ctx.translate(sx(xF), sy(yF)); ctx.rotate(-psi);
+    ctx.fillStyle='#ff7070'; ctx.fillRect(-frameSpan*s/2, -frameH*s/2, frameSpan*s, frameH*s);
+    ctx.restore();
+
+    // arms
+    function drawArm(poly){
+      ctx.strokeStyle='#ff5a5a'; ctx.lineWidth=6; ctx.beginPath();
+      ctx.moveTo(sx(poly[0].x),sy(poly[0].y)); for(let i=1;i<poly.length;i++) ctx.lineTo(sx(poly[i].x),sy(poly[i].y)); ctx.stroke();
+      ctx.strokeStyle='#ff9a9a'; ctx.lineWidth=8; ctx.beginPath(); ctx.moveTo(sx(poly[4].x),sy(poly[4].y)); ctx.lineTo(sx(poly[5].x),sy(poly[5].y)); ctx.stroke();
+    }
+    drawArm(cache.gL.poly); drawArm(cache.gR.poly);
+
+    // CAB
+    ctx.save(); ctx.translate(sx(cx), sy(cy)); ctx.rotate(-phi);
+    ctx.fillStyle='rgba(127,182,255,0.9)'; ctx.fillRect(-Wmm*s/2, +Hmm*s/2 - Hmm*s, Wmm*s, Hmm*s);
+    ctx.restore();
+
+    // grooves
+    ctx.fillStyle='#ffd166'; ctx.beginPath(); ctx.arc(sx(cache.pCL.x), sy(cache.pCL.y), 4, 0, 2*Math.PI); ctx.fill();
+    ctx.beginPath(); ctx.arc(sx(cache.pCR.x), sy(cache.pCR.y), 4, 0, 2*Math.PI); ctx.fill();
+
+    readout.textContent =
+      `t=${t.toFixed(2)} s  vᵗ=${vt.toFixed(1)} mm/s (≤${vmax.toFixed(0)})\n`+
+      `Frame c=(${xF.toFixed(1)}, ${yF.toFixed(1)}) ψ=${(psi*180/Math.PI).toFixed(2)}°\n`+
+      `Arm L θrel=[${(L_st[0]*180/Math.PI).toFixed(0)}, ${(L_st[1]*180/Math.PI).toFixed(0)}] now ${(thL_rel*180/Math.PI).toFixed(1)}° | `+
+      `Arm R θrel=[${(R_st[0]*180/Math.PI).toFixed(0)}, ${(R_st[1]*180/Math.PI).toFixed(0)}] now ${(thR_rel*180/Math.PI).toFixed(1)}°\n`+
+      `CAB c=(${cx.toFixed(1)}, ${cy.toFixed(1)}) φ=${(phi*180/Math.PI).toFixed(2)}°  μ=${mu.toFixed(2)}`;
+  }
+
+  // loop
+  let last=performance.now(), acc=0, cache=null;
+  function loop(now){
+    const el=(now-last)/1000; last=now; resize();
+    if(!paused){ acc+=Math.min(el,0.1); while(acc>=dt){ cache=step(); t+=dt; acc-=dt; } }
+    draw(cache || {gL:{poly:[{x:0,y:0}]} , gR:{poly:[{x:0,y:0}]}, pCL:{x:0,y:0}, pCR:{x:0,y:0}});
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
